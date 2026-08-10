@@ -337,19 +337,25 @@ local function keyboardIndex()
   local any = {}
   for _, category in ipairs(asArray(snapshot.categories)) do
     for _, bind in ipairs(asArray(category.binds)) do
-      local signature = modifierSignature(bind.modifiers)
-      local indexedKeys = type(bind.keys) == "table" and bind.keys or expandedKeys(bind.key)
-      for _, rawKey in ipairs(indexedKeys) do
-        local key = canonicalKey(rawKey)
-        local entry = {
-          bind = bind,
-          category = asString(category.name, tr("panel.uncategorized")),
-        }
-        local chord = signature .. "|" .. key
-        exact[chord] = exact[chord] or {}
-        exact[chord][#exact[chord] + 1] = entry
-        any[key] = any[key] or {}
-        any[key][#any[key] + 1] = entry
+      -- Merged rows carry every combination: index each one at its own chord
+      -- instead of pointing the display label at a phantom key.
+      local combos = type(bind.combos) == "table" and #bind.combos > 0 and bind.combos
+        or { { modifiers = bind.modifiers, key = bind.key, keys = bind.keys } }
+      for _, combo in ipairs(combos) do
+        local signature = modifierSignature(combo.modifiers)
+        local indexedKeys = type(combo.keys) == "table" and combo.keys or expandedKeys(combo.key)
+        for _, rawKey in ipairs(indexedKeys) do
+          local key = canonicalKey(rawKey)
+          local entry = {
+            bind = bind,
+            category = asString(category.name, tr("panel.uncategorized")),
+          }
+          local chord = signature .. "|" .. key
+          exact[chord] = exact[chord] or {}
+          exact[chord][#exact[chord] + 1] = entry
+          any[key] = any[key] or {}
+          any[key][#any[key] + 1] = entry
+        end
       end
     end
   end
@@ -393,6 +399,14 @@ local function bindMatches(bind, needle)
   for _, modifier in ipairs(asArray(bind.modifiers)) do
     if contains(modifier, needle) then
       return true
+    end
+  end
+  if type(bind.combos) == "table" then
+    for _, combo in ipairs(bind.combos) do
+      if contains(combo.key, needle) then return true end
+      for _, modifier in ipairs(asArray(combo.modifiers)) do
+        if contains(modifier, needle) then return true end
+      end
     end
   end
   return false
@@ -2175,44 +2189,34 @@ end
 
 local function bindRow(bind, categoryName, columnCount, rowIndex)
   local width = keyWidth(columnCount)
-  local keys = {}
-  local tokens = {}
-  local estimatedWidth = 0
-  for _, modifier in ipairs(asArray(bind.modifiers)) do
-    tokens[#tokens + 1] = asString(modifier, "?")
-    estimatedWidth = estimatedWidth + #asString(modifier, "?") * 7 + 18
-    keys[#keys + 1] = keyPill(modifier, false)
-  end
-  local mainKey = asString(bind.key, "?")
-  tokens[#tokens + 1] = mainKey
-  estimatedWidth = estimatedWidth + #mainKey * 7 + 18 + math.max(0, #tokens - 1) * 4
-  keys[#keys + 1] = keyPill(mainKey, true)
+  local combos = type(bind.combos) == "table" and #bind.combos > 0 and bind.combos
+    or { { modifiers = bind.modifiers, key = bind.key } }
 
   local keyArea
-  if estimatedWidth > width then
-    keyArea = ui.row({
-      width = width,
-      fill = asString(cfg("key_color"), "surface"),
-      border = "outline",
-      borderWidth = 1,
-      radius = 7,
-      paddingH = 6,
-      paddingV = 2,
-      align = "center",
-      justify = "center",
-    }, {
-      ui.label({
-        text = table.concat(tokens, " + "),
-        color = asString(cfg("key_text_color"), "on_surface"),
-        fontSize = 10,
-        fontWeight = "bold",
-        textAlign = "center",
-        maxWidth = width - 12,
-        maxLines = 2,
-      }),
-    })
-  else
+  local single = #combos == 1
+  if single then
+    local keys = {}
+    for _, modifier in ipairs(asArray(combos[1].modifiers)) do
+      keys[#keys + 1] = keyPill(modifier, false)
+    end
+    keys[#keys + 1] = keyPill(asString(combos[1].key, "?"), true)
+    -- Always render distinct pills: collapsing to a single bordered label made
+    -- wide chords like Super+Shift+Scroll Down read as one giant key. The row
+    -- sizes to its content and only wraps visually inside the fixed slot.
     keyArea = ui.row({ width = width, gap = 4, align = "center" }, keys)
+  else
+    -- One line of pills per key combination, so merged shortcuts still read
+    -- as distinct physical presses instead of one opaque label.
+    local lines = {}
+    for _, combo in ipairs(combos) do
+      local pills = {}
+      for _, modifier in ipairs(asArray(combo.modifiers)) do
+        pills[#pills + 1] = keyPill(modifier, false)
+      end
+      pills[#pills + 1] = keyPill(asString(combo.key, "?"), true)
+      lines[#lines + 1] = ui.row({ gap = 4, align = "center" }, pills)
+    end
+    keyArea = ui.column({ width = width, gap = 4 }, lines)
   end
 
   local description = asString(bind.description, tr("panel.no_description"))
@@ -2517,6 +2521,11 @@ local function statusBody(status, errorText)
   if translatedError == errorKey then
     translatedError = tr("panel.unknown_error")
   end
+  -- Internal parser failures carry the raw Lua error for diagnosis.
+  local detail = asString(snapshot.error_detail)
+  if isError and detail ~= "" then
+    translatedError = translatedError .. "\n" .. detail
+  end
   return ui.column({ flexGrow = 1, align = "center", justify = "center", gap = 12 }, {
     ui.glyph({
       name = isError and "alert-circle" or "refresh",
@@ -2534,7 +2543,7 @@ local function statusBody(status, errorText)
       color = "on_surface_variant",
       textAlign = "center",
       maxWidth = 680,
-      maxLines = 4,
+      maxLines = 8,
     }),
     ui.label({
       text = tr("panel.path_hint"),
@@ -2836,7 +2845,11 @@ function onOpen(_context)
     hiddenDeleteConfirmBindId = ""
     clearCategoryRename()
   end
-  if snapshot.status == nil or snapshot.status == "idle" then
+  -- A "loading" snapshot observed at open time cannot still be in flight: the
+  -- service keeps running while the panel is closed, so any refresh it had
+  -- accepted has long since published. Treat it as stale (e.g. an interrupted
+  -- callback from an older plugin version) and request a fresh snapshot.
+  if snapshot.status == nil or snapshot.status == "idle" or snapshot.status == "loading" then
     requestRefresh()
   end
   render()

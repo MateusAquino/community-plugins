@@ -288,7 +288,8 @@ them automatically.
 | `niri_config` | `~/.config/niri/config.kdl` | Niri KDL root. |
 | `mangowc_config` | `~/.config/mango/config.conf` | MangoWC config root. |
 | `merge_sequential` | `true` | Fold related numbered shortcuts into one row. |
-| `show_undescribed` | `true` | Show Hyprland binds without descriptions. |
+| `merge_similar` | `false` | Fold shortcuts that trigger the same action into one read-only row. |
+| `show_undescribed` | `true` | Show Hyprland binds without descriptions and Niri binds without a `hotkey-overlay-title`. |
 | `keyboard_layout` | `100` | Default 100%, 96%, 80%, 75%, 65%, or 60% view. |
 | `columns` | `3` | One to four balanced category columns. |
 | `card_color` / `card_opacity` | `surface_variant` / `35` | Card background role or custom color and opacity. |

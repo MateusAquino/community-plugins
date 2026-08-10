@@ -287,7 +287,9 @@
       "mangowc_required_source_missing": "A required MangoWC source could not be read. Fix the configuration path and try again.",
       "niri_config_unreadable": "The configured Niri KDL file could not be read.",
       "niri_no_binds": "No active keybindings were found in the Niri configuration.",
+      "niri_parse_failed": "The Niri parser hit an internal error. The warning banner text contains details.",
       "niri_required_include_missing": "A required Niri include could not be read. Fix the configuration path and try again.",
+      "mangowc_parse_failed": "The MangoWC parser hit an internal error. The warning banner text contains details.",
       "unknown": "The service returned an unknown error."
     },
     "keyboard": {
@@ -419,6 +421,10 @@
       "description": "Combine related numbered shortcuts, such as workspaces 1–9, into one row.",
       "label": "Merge sequential shortcuts"
     },
+    "merge_similar": {
+      "description": "Show one row per action when several shortcuts trigger it. Grouped rows are read-only.",
+      "label": "Merge similar shortcuts"
+    },
     "modifier_color": {
       "description": "Theme role or custom background color for this modifier."
     },
@@ -436,7 +442,7 @@
       "label": "Shift text"
     },
     "show_undescribed": {
-      "description": "Include Hyprland shortcuts without explicit descriptions. Niri and MangoWC use generated action descriptions.",
+      "description": "Include shortcuts without explicit descriptions. Niri binds without a hotkey-overlay-title and Hyprland binds without descriptions are hidden when off.",
       "label": "Show shortcuts without descriptions"
     },
     "super_color": {
