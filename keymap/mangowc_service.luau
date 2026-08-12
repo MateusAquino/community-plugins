@@ -20,15 +20,25 @@ local pendingRefresh = false
 local parseCoroutine = nil
 local parseSource = ""
 local parseUpdatedAt = ""
--- The host gives each callback a 25ms CPU budget. Large MangoWC trees exceed
--- that when parsed in one go inside the instrumented VM, so the parser yields
--- to the next update tick once a slice gets expensive.
-local PARSE_LINE_SLICE = 40
--- Prefer a wall-clock slice when the sandbox exposes os.clock: the host's
--- interrupt meter makes per-line costs unpredictable, and overrunning the
--- budget aborts the whole refresh.
-local PARSE_SLICE_SECONDS = 0.012
+local fastTicks = false
+
+-- The host meters every callback with an interrupt-driven CPU budget. Large
+-- MangoWC trees exceed it when parsed in one resume, so the parser yields to
+-- the next update tick every few lines. A wall-clock early-out tightens the
+-- slice further when the sandbox exposes os.clock; without it, the fixed
+-- line budget alone keeps each resume safely small.
+local PARSE_LINE_SLICE = 25
+local PARSE_SLICE_SECONDS = 0.005
 local sliceStartedAt = nil
+local parseGeneration = 0
+local linesThisResume = 0
+
+local function setFastTicks(enabled)
+	if fastTicks == enabled then return end
+	if type(noctalia.setUpdateInterval) ~= "function" then return end
+	fastTicks = enabled
+	noctalia.setUpdateInterval(enabled and 60 or 1000)
+end
 
 local function noteSliceStart()
 	if type(os) == "table" and type(os.clock) == "function" then
@@ -707,41 +717,48 @@ local function parseFile(context, path, optional, depth)
 	local pendingMarkerLine = nil
 	local pendingMarkerRaw = nil
 	local lineNumber = 0
-	local hiddenLines = sourceLines(source)
-	local hiddenCategory = nil
-	local hiddenKeymode = context.keymode
-	local hiddenCursor = 1
 	local hiddenConsumed = {}
-	while hiddenCursor <= #hiddenLines do
-		local block, blockEnd, candidate = hiddenBlockAt(hiddenLines, hiddenCursor)
-		if candidate then
-			for consumed = hiddenCursor, blockEnd do hiddenConsumed[consumed] = true end
-			if block == nil then
-				context.warnings[#context.warnings + 1] = "hidden_block_invalid:" .. path .. ":" .. tostring(hiddenCursor)
-			else
-				context.hidden[#context.hidden + 1] = hiddenTarget(
-					block, path, hiddenCursor, blockEnd,
-					hiddenCategory or context.defaultCategory, hiddenKeymode
-				)
-			end
-			hiddenCursor = blockEnd + 1
-		else
-			local raw = hiddenLines[hiddenCursor]
-			local category = extractCategory(raw)
-			if category ~= nil then hiddenCategory = category end
-			local effective = trim(raw:sub(1, (findUnquotedComment(raw) or (#raw + 1)) - 1))
-			local directive, value = effective:match("^([%w%-]+)%s*=%s*(.*)$")
-			if directive ~= nil and directive:lower() == "keymode" then
-				hiddenKeymode = trim(value) ~= "" and trim(value) or "default"
-			end
-			hiddenCursor = hiddenCursor + 1
-		end
+	if source:find("# Keymap hidden ", 1, true) ~= nil then
+	  local hiddenLines = sourceLines(source)
+	  local hiddenCategory = nil
+	  local hiddenKeymode = context.keymode
+	  local hiddenCursor = 1
+	  while hiddenCursor <= #hiddenLines do
+	  	local block, blockEnd, candidate = hiddenBlockAt(hiddenLines, hiddenCursor)
+	  	if candidate then
+	  		for consumed = hiddenCursor, blockEnd do hiddenConsumed[consumed] = true end
+	  		if block == nil then
+	  			context.warnings[#context.warnings + 1] = "hidden_block_invalid:" .. path .. ":" .. tostring(hiddenCursor)
+	  		else
+	  			context.hidden[#context.hidden + 1] = hiddenTarget(
+	  				block, path, hiddenCursor, blockEnd,
+	  				hiddenCategory or context.defaultCategory, hiddenKeymode
+	  			)
+	  		end
+	  		hiddenCursor = blockEnd + 1
+	  	else
+	  		local raw = hiddenLines[hiddenCursor]
+	  		local category = extractCategory(raw)
+	  		if category ~= nil then hiddenCategory = category end
+	  		local effective = trim(raw:sub(1, (findUnquotedComment(raw) or (#raw + 1)) - 1))
+	  		local directive,  value = effective:match("^([%w%-]+)%s*=%s*(.*)$")
+	  		if directive ~= nil and directive:lower() == "keymode" then
+	  			hiddenKeymode = trim(value) ~= "" and trim(value) or "default"
+	  		end
+	  		hiddenCursor = hiddenCursor + 1
+	  	end
+	  end
 	end
 	for rawLine in (source .. "\n"):gmatch("([^\n]*)\n") do
 		lineNumber = lineNumber + 1
 		-- Yield once a slice gets expensive so a multi-file parse never holds
-		-- the callback past its budget; update() resumes on the next tick.
-		if lineNumber % PARSE_LINE_SLICE == 0 and sliceExpired() then coroutine.yield() end
+		-- the callback past its budget; update() resumes on the next tick. The
+		-- counter spans included files, so many short files cannot dodge it.
+		linesThisResume = linesThisResume + 1
+		if linesThisResume >= PARSE_LINE_SLICE or sliceExpired() then
+			linesThisResume = 0
+			coroutine.yield()
+		end
 		if not hiddenConsumed[lineNumber] then
 		local commentAt = findUnquotedComment(rawLine)
 		local effective = trim(commentAt ~= nil and rawLine:sub(1, commentAt - 1) or rawLine)
@@ -841,7 +858,7 @@ local function mergedBind(run)
 		kind = first.kind,
 		flags = first.flags,
 		activation = type(first.flags) == "table" and first.flags.release == true and "release" or "press",
-		command = first.command, managed = first.managed == true,
+		command = first.command, action = first.action, managed = first.managed == true,
 		source = first.source,
 		line = first.line,
 		start_line = startLine, end_line = endLine,
@@ -1030,6 +1047,13 @@ end
 
 function refresh()
 	if not isActive() then
+		-- Invalidate any in-flight parse from a previous compositor selection:
+		-- its result must never overwrite the new owner's snapshot.
+		parseGeneration = parseGeneration + 1
+		parseCoroutine = nil
+		refreshing = false
+		refreshQueued = false
+		setFastTicks(false)
 		return
 	end
 	if refreshing then
@@ -1037,6 +1061,8 @@ function refresh()
 		return
 	end
 	refreshing = true
+	parseGeneration = parseGeneration + 1
+	local generation = parseGeneration
 
 	local source = configPath()
 	parseSource = source
@@ -1050,6 +1076,9 @@ function refresh()
 
 	parseCoroutine = coroutine.create(function()
 		local parsed = parseConfig(source)
+		if generation ~= parseGeneration then
+			return
+		end
 		if #parsed.files == 0 then
 			noctalia.state.set(SNAPSHOT_KEY, snapshot("error", source, "mangowc_config_unreadable", {}, 0, parsed.warnings, parseUpdatedAt))
 			return
@@ -1068,7 +1097,6 @@ function refresh()
 		)
 	end)
 	-- Resume once within this budget; a large config suspends and continues on
-	-- the next update tick instead of blowing the 25ms callback budget.
 	pumpParse()
 end
 
@@ -1080,9 +1108,11 @@ function pumpParse()
 		return
 	end
 	noteSliceStart()
+	linesThisResume = 0
 	local ok, err = coroutine.resume(parseCoroutine)
 	if not ok then
 		parseCoroutine = nil
+		setFastTicks(false)
 		local failed = snapshot("error", parseSource, "mangowc_parse_failed", {}, 0, {}, parseUpdatedAt)
 		failed.error_detail = tostring(err)
 		noctalia.state.set(SNAPSHOT_KEY, failed)
@@ -1091,9 +1121,12 @@ function pumpParse()
 	end
 	if coroutine.status(parseCoroutine) == "dead" then
 		parseCoroutine = nil
+		setFastTicks(false)
 		finishRefresh()
+		return
 	end
 	-- Still suspended: left parked for the next update() tick.
+	setFastTicks(true)
 end
 
 function onIpc(event, _payload)
@@ -1118,6 +1151,8 @@ function update()
 		refresh()
 	elseif parseCoroutine ~= nil then
 		pumpParse()
+	else
+		setFastTicks(false)
 	end
 end
 

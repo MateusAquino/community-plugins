@@ -267,17 +267,21 @@ local function conflictsWithSnapshot(request, excludedId)
 	local keys = comparableKeys(request.keys)
 	for _, category in ipairs(type(snapshot) == "table" and snapshot.categories or {}) do
 		for _, bind in ipairs(type(category.binds) == "table" and category.binds or {}) do
-			local bindKeys = comparableKeys(type(bind.keys) == "table" and bind.keys or { bind.key })
-			local sameKeys = #bindKeys == #keys
-			if sameKeys then
-				for index, key in ipairs(keys) do
-					if bindKeys[index] ~= key then sameKeys = false break end
+			local combos = type(bind.combos) == "table" and #bind.combos > 0 and bind.combos
+				or { { modifiers = bind.modifiers, key = bind.key, keys = bind.keys } }
+			for _, combo in ipairs(combos) do
+				local bindKeys = comparableKeys(type(combo.keys) == "table" and combo.keys or { combo.key })
+				local sameKeys = #bindKeys == #keys
+				if sameKeys then
+					for index, key in ipairs(keys) do
+						if bindKeys[index] ~= key then sameKeys = false break end
+					end
 				end
-			end
-			if tostring(bind.id or "") ~= tostring(excludedId or "") and sameKeys
-				and comparableModifiers(bind.modifiers) == modifiers
-				and tostring(bind.activation or "press") == request.activation then
-				return true
+				if tostring(bind.id or "") ~= tostring(excludedId or "") and sameKeys
+					and comparableModifiers(combo.modifiers) == modifiers
+					and tostring(bind.activation or "press") == request.activation then
+					return true
+				end
 			end
 		end
 	end

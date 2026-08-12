@@ -9,14 +9,13 @@ local MAX_FILES = 64
 local MAX_SOURCE_BYTES = 512 * 1024
 local MAX_HIDDEN_BYTES = 2 * 1024 * 1024
 local EXACT_SOURCE_FINGERPRINT = "exact-v1"
--- The host gives each callback a 25ms CPU budget. Real Niri configs with
--- includes exceed that when parsed in one go inside the instrumented VM, so
--- the parser yields to the next update tick once a slice gets expensive.
-local PARSE_LINE_SLICE = 40
--- Prefer a wall-clock slice when the sandbox exposes os.clock: the host's
--- interrupt meter makes per-line costs unpredictable, and overrunning the
--- budget aborts the whole refresh.
-local PARSE_SLICE_SECONDS = 0.012
+-- The host meters every callback with an interrupt-driven CPU budget. Real
+-- Niri configs exceed it when parsed in one resume, so the parser yields to
+-- the next update tick every few lines. A wall-clock early-out tightens the
+-- slice further when the sandbox exposes os.clock; without it, the fixed
+-- line budget alone keeps each resume safely small.
+local PARSE_LINE_SLICE = 25
+local PARSE_SLICE_SECONDS = 0.005
 local sliceStartedAt = nil
 
 local function noteSliceStart()
@@ -41,6 +40,16 @@ local pendingRefresh = false
 local parseCoroutine = nil
 local parseSource = ""
 local parseUpdatedAt = ""
+local parseGeneration = 0
+local linesThisResume = 0
+local fastTicks = false
+
+local function setFastTicks(enabled)
+	if fastTicks == enabled then return end
+	if type(noctalia.setUpdateInterval) ~= "function" then return end
+	fastTicks = enabled
+	noctalia.setUpdateInterval(enabled and 60 or 1000)
+end
 
 local function config(key, fallback)
 	local value = noctalia.getConfig(key)
@@ -712,8 +721,8 @@ local function mergeSimilar(binds)
 	local grouped = {}
 	local order = {}
 	for index, bind in ipairs(binds) do
-		local signature = (bind.has_overlay_title == true and "title:" or "action:")
-			.. (bind.has_overlay_title == true and bind.description or bind.action)
+		local signature = "action:"
+			.. tostring(bind.dispatcher) .. "\0" .. tostring(bind.action)
 		local group = grouped[signature]
 		if group == nil then
 			group = { first = index, parts = {} }
@@ -955,8 +964,13 @@ local function parseConfig(root, rootSource)
 			lineNumber = lineNumber + 1
 			-- Yield once a slice gets expensive so a multi-file parse never
 			-- holds the callback past its budget; update() resumes on the
-			-- next tick with a fresh window.
-			if lineNumber % PARSE_LINE_SLICE == 0 and sliceExpired() then coroutine.yield() end
+			-- next tick with a fresh window. The counter spans included files,
+			-- so many short includes cannot dodge the yield check.
+			linesThisResume = linesThisResume + 1
+			if linesThisResume >= PARSE_LINE_SLICE or sliceExpired() then
+				linesThisResume = 0
+				coroutine.yield()
+			end
 			local code, comment
 			code, comment, inBlockComment = stripComments(rawLine, inBlockComment)
 			local stripped = trim(code)
@@ -1071,6 +1085,13 @@ function refresh()
 	-- Each compositor service receives the same events. Only the selected or
 	-- auto-detected service may publish, preventing snapshot races.
 	if detectedCompositor() ~= "niri" then
+		-- Invalidate any in-flight parse from a previous compositor selection:
+		-- its result must never overwrite the new owner's snapshot.
+		parseGeneration = parseGeneration + 1
+		parseCoroutine = nil
+		refreshing = false
+		refreshQueued = false
+		setFastTicks(false)
 		return
 	end
 	if refreshing then
@@ -1078,6 +1099,8 @@ function refresh()
 		return
 	end
 	refreshing = true
+	parseGeneration = parseGeneration + 1
+	local generation = parseGeneration
 	local source = sourcePath()
 	parseSource = source
 	parseUpdatedAt = os.date("%H:%M:%S")
@@ -1101,6 +1124,10 @@ function refresh()
 
 	parseCoroutine = coroutine.create(function()
 		local categories, total, hidden, warnings, fatalError = parseConfig(source, rootSource)
+		if generation ~= parseGeneration then
+			-- A compositor switch or a newer refresh superseded this parse.
+			return
+		end
 		if fatalError ~= nil then
 			noctalia.state.set(
 				SNAPSHOT_KEY,
@@ -1119,7 +1146,6 @@ function refresh()
 		end
 	end)
 	-- Resume once within this budget; a large config suspends and continues on
-	-- the next update tick instead of blowing the 25ms callback budget.
 	pumpParse()
 end
 
@@ -1131,9 +1157,11 @@ function pumpParse()
 		return
 	end
 	noteSliceStart()
+	linesThisResume = 0
 	local ok, err = coroutine.resume(parseCoroutine)
 	if not ok then
 		parseCoroutine = nil
+		setFastTicks(false)
 		noctalia.state.set(
 			SNAPSHOT_KEY,
 			snapshot("error", parseSource, "niri_parse_failed", {}, 0, {}, parseUpdatedAt, {}, tostring(err))
@@ -1143,9 +1171,12 @@ function pumpParse()
 	end
 	if coroutine.status(parseCoroutine) == "dead" then
 		parseCoroutine = nil
+		setFastTicks(false)
 		finishRefresh()
+		return
 	end
 	-- Still suspended: left parked for the next update() tick.
+	setFastTicks(true)
 end
 
 function onIpc(event, _payload)
@@ -1170,6 +1201,8 @@ function update()
 		refresh()
 	elseif parseCoroutine ~= nil then
 		pumpParse()
+	else
+		setFastTicks(false)
 	end
 end
 

@@ -48,6 +48,7 @@ end
 -- Hyprland: merge_similar groups same-action binds; watcher ignores echoes.
 do
 	local source = table.concat({
+		'-- 1. General',
 		'hl.bind("SUPER + W", hl.dsp.exec_cmd("close"), { description = "Close Window" })',
 		'hl.bind("ALT + F4", hl.dsp.exec_cmd("close"), { description = "Close Window" })',
 		'hl.bind("SUPER + F", hl.dsp.exec_cmd("max"), { description = "Maximize" })',
@@ -104,4 +105,81 @@ do
 	assert(refreshes == afterFirst + 1, "increment did not trigger exactly one refresh")
 end
 
-print("merge similar tests: ok")
+
+
+-- MangoWC: merged numeric ranges keep their action, so merge_similar cannot
+-- collapse two different ranges into one.
+do
+	local lines = {}
+	for index = 1, 4 do
+		lines[#lines + 1] = string.format('bind=SUPER,%d,view,%d #"Workspace %d"', index, index, index)
+	end
+	for index = 1, 4 do
+		lines[#lines + 1] = string.format('bind=SUPER+SHIFT,%d,movetoworkspace,%d #"Move %d"', index, index, index)
+	end
+	local source = table.concat(lines, "\n") .. "\n"
+	local values, state = stateMock()
+	noctalia = {
+		state = state,
+		getConfig = function(key)
+			return ({
+				compositor = "mangowc", mangowc_config = "/fixture/config.conf",
+				merge_sequential = true, merge_similar = true,
+			})[key]
+		end,
+		getenv = function(key) return key == "MANGO_INSTANCE_SIGNATURE" and "test" or "" end,
+		expandPath = function(path) return path end,
+		fileExists = function(path) return path == "/fixture/config.conf" end,
+		readFile = function(path) return path == "/fixture/config.conf" and source or nil end,
+		tr = function(key) return key == "category.other" and "Other" or key end,
+	}
+	assert(loadfile("mangowc_service.luau"))()
+	local binds = {}
+	for _, category in ipairs(values["keymap.snapshot"].categories or {}) do
+		for _, bind in ipairs(category.binds or {}) do binds[#binds + 1] = bind end
+	end
+	assert(#binds == 2, "different mangowc ranges collapsed: " .. #binds)
+	assert(binds[1].id:match("^range:") and binds[2].id:match("^range:"), "ranges lost their ids")
+end
+
+-- Hyprland: undescribed binds with unknown actions never merge.
+do
+	local source = table.concat({
+		'hl.bind("SUPER + A", hl.dsp.exec_cmd("one"))',
+		'hl.bind("SUPER + B", hl.dsp.exec_cmd("two"))',
+	}, "\n")
+	local plain = table.concat({
+		"bindd\n\tmodmask: 64\n\tsubmap: \n\tkey: A\n\tkeycode: 0\n\tcatchall: false\n\tdescription: \n\tdispatcher: __lua\n\targ: 1\n",
+		"bindd\n\tmodmask: 64\n\tsubmap: \n\tkey: B\n\tkeycode: 0\n\tcatchall: false\n\tdescription: \n\tdispatcher: __lua\n\targ: 2\n",
+	}, "\n")
+	local values, state = stateMock()
+	noctalia = {
+		state = state,
+		getConfig = function(key)
+			return ({
+				compositor = "hyprland", hyprland_config = "/fixture/hyprland.lua",
+				merge_sequential = false, show_undescribed = true, merge_similar = true,
+			})[key]
+		end,
+		getenv = function(key) return key == "HYPRLAND_INSTANCE_SIGNATURE" and "test" or "" end,
+		expandPath = function(path) return path end,
+		fileExists = function(path) return path == "/fixture/hyprland.lua" end,
+		listDir = function() return nil end,
+		readFile = function(path) return path == "/fixture/hyprland.lua" and source or nil end,
+		commandExists = function(command) return command == "hyprctl" end,
+		runAsync = function(command, callback)
+			callback({ exitCode = 0, timedOut = false, stdout = command == "hyprctl binds" and plain or "invalid-json" })
+			return true
+		end,
+		json = { decode = function() error("malformed JSON fixture") end },
+		tr = function(key) return key end,
+	}
+	assert(loadfile("service.luau"))()
+	local binds = {}
+	for _, category in ipairs(values["keymap.snapshot"].categories or {}) do
+		for _, bind in ipairs(category.binds or {}) do binds[#binds + 1] = bind end
+	end
+	assert(#binds == 2, "unidentifiable hyprland binds merged: " .. #binds)
+end
+
+print("merge similar extended tests: ok")

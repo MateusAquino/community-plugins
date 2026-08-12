@@ -1268,17 +1268,22 @@ local function creatorConflict(index)
   local signature = activeModifierSignature()
   for _, category in ipairs(asArray(snapshot.categories)) do
     for _, bind in ipairs(asArray(category.binds)) do
-      if not (formMode == "edit" and asString(bind.id) == editingBindId)
-        and modifierSignature(bind.modifiers) == signature
-        and asString(bind.activation, "press") == creatorActivation then
-        local rawKeys = type(bind.keys) == "table" and bind.keys or expandedKeys(bind.key)
-        if #rawKeys == #creatorKeys then
-          local matches = true
-          for index, rawKey in ipairs(rawKeys) do
-            if canonicalKey(rawKey) ~= creatorKeys[index] then matches = false break end
-          end
-          if matches then
-            return { bind = bind, category = asString(category.name, tr("panel.uncategorized")) }
+      if not (formMode == "edit" and asString(bind.id) == editingBindId) then
+        local combos = type(bind.combos) == "table" and #bind.combos > 0 and bind.combos
+          or { { modifiers = bind.modifiers, key = bind.key, keys = bind.keys } }
+        for _, combo in ipairs(combos) do
+          if modifierSignature(combo.modifiers) == signature
+            and asString(bind.activation, "press") == creatorActivation then
+            local rawKeys = type(combo.keys) == "table" and combo.keys or expandedKeys(combo.key)
+            if #rawKeys == #creatorKeys then
+              local matches = true
+              for index, rawKey in ipairs(rawKeys) do
+                if canonicalKey(rawKey) ~= creatorKeys[index] then matches = false break end
+              end
+              if matches then
+                return { bind = bind, category = asString(category.name, tr("panel.uncategorized")) }
+              end
+            end
           end
         end
       end
@@ -1744,7 +1749,7 @@ selectKeyboardKey = function(code)
 end
 
 
-local function keyPill(token, isKey)
+local function keyPill(token, isKey, compact)
   local fill
   local textColor
   if isKey then
@@ -1758,7 +1763,7 @@ local function keyPill(token, isKey)
     border = "outline",
     borderWidth = 1,
     radius = 7,
-    paddingH = 7,
+    paddingH = compact and 4 or 7,
     paddingV = 2,
     align = "center",
     justify = "center",
@@ -1766,7 +1771,7 @@ local function keyPill(token, isKey)
     ui.label({
       text = asString(token, "?"),
       color = asString(textColor, "on_surface"),
-      fontSize = 11,
+      fontSize = compact and 9 or 11,
       fontWeight = "bold",
       maxLines = 1,
     }),
@@ -2195,26 +2200,37 @@ local function bindRow(bind, categoryName, columnCount, rowIndex)
   local keyArea
   local single = #combos == 1
   if single then
+    local tokens = #asArray(combos[1].modifiers) + 1
+    local estimatedWidth = 0
+    for _, modifier in ipairs(asArray(combos[1].modifiers)) do
+      estimatedWidth = estimatedWidth + #asString(modifier, "?") * 7 + 18
+    end
+    estimatedWidth = estimatedWidth + #asString(combos[1].key, "?") * 7 + 18 + math.max(0, tokens - 1) * 4
+    local compact = estimatedWidth > width
     local keys = {}
     for _, modifier in ipairs(asArray(combos[1].modifiers)) do
-      keys[#keys + 1] = keyPill(modifier, false)
+      keys[#keys + 1] = keyPill(modifier, false, compact)
     end
-    keys[#keys + 1] = keyPill(asString(combos[1].key, "?"), true)
-    -- Always render distinct pills: collapsing to a single bordered label made
-    -- wide chords like Super+Shift+Scroll Down read as one giant key. The row
-    -- sizes to its content and only wraps visually inside the fixed slot.
-    keyArea = ui.row({ width = width, gap = 4, align = "center" }, keys)
+    keys[#keys + 1] = keyPill(asString(combos[1].key, "?"), true, compact)
+    keyArea = ui.row({ width = width, gap = compact and 2 or 4, align = "center" }, keys)
   else
     -- One line of pills per key combination, so merged shortcuts still read
     -- as distinct physical presses instead of one opaque label.
     local lines = {}
     for _, combo in ipairs(combos) do
-      local pills = {}
-      for _, modifier in ipairs(asArray(combo.modifiers)) do
-        pills[#pills + 1] = keyPill(modifier, false)
+      local estimatedWidth = 0
+      local mods = asArray(combo.modifiers)
+      for _, modifier in ipairs(mods) do
+        estimatedWidth = estimatedWidth + #asString(modifier, "?") * 7 + 18
       end
-      pills[#pills + 1] = keyPill(asString(combo.key, "?"), true)
-      lines[#lines + 1] = ui.row({ gap = 4, align = "center" }, pills)
+      estimatedWidth = estimatedWidth + #asString(combo.key, "?") * 7 + 18 + math.max(0, #mods) * 4
+      local compact = estimatedWidth > width
+      local pills = {}
+      for _, modifier in ipairs(mods) do
+        pills[#pills + 1] = keyPill(modifier, false, compact)
+      end
+      pills[#pills + 1] = keyPill(asString(combo.key, "?"), true, compact)
+      lines[#lines + 1] = ui.row({ gap = compact and 2 or 4, align = "center" }, pills)
     end
     keyArea = ui.column({ width = width, gap = 4 }, lines)
   end

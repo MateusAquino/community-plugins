@@ -921,7 +921,10 @@ local function mergeSimilar(binds)
 	local grouped = {}
 	local order = {}
 	for index, bind in ipairs(binds) do
+		local identifiable = tostring(bind.command or "") ~= "" or tostring(bind.action or "") ~= ""
+		if identifiable then
 		local signature = "action:"
+			.. tostring(bind.activation) .. "\0"
 			.. tostring(bind.description) .. "\0"
 			.. tostring(bind.dispatcher) .. "\0" .. tostring(bind.command) .. "\0" .. tostring(bind.action)
 		local group = grouped[signature]
@@ -931,6 +934,7 @@ local function mergeSimilar(binds)
 			order[#order + 1] = signature
 		end
 		group.parts[#group.parts + 1] = bind
+		end
 	end
 	local mergedAt = {}
 	local swallowed = {}
@@ -951,7 +955,7 @@ local function mergeSimilar(binds)
 				combos = combos,
 				description = first.description,
 				dispatcher = first.dispatcher,
-				activation = first.release == true and "release" or "press",
+				activation = first.activation == "release" and "release" or "press",
 				command = first.command,
 				action = first.action,
 				capabilities = {
