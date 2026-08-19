@@ -100,6 +100,39 @@ do
 	assert(values["keymap.snapshot"].total == 4, "show_undescribed=true lost binds")
 end
 
+-- Ordinary single-line native spawn argv is editable without converting it to
+-- spawn-sh. More elaborate KDL stays read-only, while spawn-sh keeps its
+-- existing shell-command behavior.
+do
+	local source = [[binds {
+    Super+B hotkey-overlay-title="Noctalia panel" { spawn "noctalia" "msg" "panel-toggle" "kenn/keybind-cheatsheet:cheatsheet"; }
+    Super+T hotkey-overlay-title="Terminal" { spawn-sh "foot --server"; }
+    Super+R hotkey-overlay-title="Raw string" { spawn r#"foot"#; }
+    Super+C hotkey-overlay-title="Commented" { spawn "foot"; // preserve this comment
+    }
+}]]
+	local values, state = stateMock()
+	noctalia = niriHost(values, state, source, {
+		compositor = "niri", niri_config = "/fixture/config.kdl",
+		merge_sequential = false, show_undescribed = true, merge_similar = false,
+	})
+	assert(loadfile("niri_service.luau"))()
+	local binds = allBinds(values["keymap.snapshot"])
+	assert(#binds == 4, "native spawn fixture lost binds")
+	assert(binds[1].command == 'spawn "noctalia" "msg" "panel-toggle" "kenn/keybind-cheatsheet:cheatsheet"',
+		"native spawn action was not exposed for editing")
+	assert(binds[1].command_kind == "native" and binds[1].capabilities.command == true
+		and binds[1].capabilities.native_spawn == true,
+		"ordinary native spawn action is not editable")
+	assert(binds[2].command == "foot --server" and binds[2].command_kind == "shell"
+		and binds[2].capabilities.command == true and binds[2].capabilities.native_spawn == false,
+		"spawn-sh command behavior changed")
+	assert(binds[3].capabilities.command == false and binds[3].capabilities.native_spawn == false,
+		"unsupported native spawn syntax became editable")
+	assert(binds[4].capabilities.command == false and binds[4].capabilities.native_spawn == false,
+		"commented native spawn action became editable")
+end
+
 -- merge_similar groups same-action binds into one read-only row.
 do
 	local source = [[binds {

@@ -1510,6 +1510,9 @@ local function creatorForm(index)
     creatorCategoryIndex = #names
   end
   local isEditing = formMode == "edit"
+  local nativeSpawnEdit = isEditing and editingCapabilities.native_spawn == true
+  local commandLibraryEnabled = not isEditing
+    or (editingCapabilities.command == true and not nativeSpawnEdit)
   local showManualCombination = isEditing or viewMode == "list"
   local usesNewCategory = creatorCategoryIndex >= #names
   local compositor = normalized(snapshot.compositor)
@@ -1626,8 +1629,9 @@ local function creatorForm(index)
       ui.button({
         text = tr("panel.command_library.open"), glyph = "books",
         variant = commandLibraryOpen and "primary" or "ghost", controlSize = "sm",
-        enabled = not isEditing or editingCapabilities.command == true,
-        tooltip = tr("panel.command_library.open_hint"),
+        enabled = commandLibraryEnabled,
+        tooltip = nativeSpawnEdit and tr("panel.editor.native_spawn_library")
+          or tr("panel.command_library.open_hint"),
         onClick = "onCommandLibraryToggle",
       }),
     }),
@@ -1641,7 +1645,13 @@ local function creatorForm(index)
         text = tr("panel.command_library.placeholder_hint"), color = "tertiary", fontSize = 9,
         maxLines = 2, flexGrow = 1,
       }) or ui.spacer({ flexGrow = 1 }),
-    }) or ui.row({ visible = false }, {}),
+    }) or ui.row({ gap = 6, align = "center" }, {
+      ui.glyph({ name = "lock", size = 13, color = "on_surface_variant" }),
+      ui.label({
+        text = tr("panel.editor.native_command"), color = "on_surface_variant",
+        fontSize = 9, maxLines = 2, flexGrow = 1,
+      }),
+    }),
     commandLibraryNode(),
     ui.row({ gap = 8, align = "center" }, {
       ui.label({
@@ -2070,7 +2080,8 @@ local function openBindEditor(bind, categoryName)
   end
   creatorActivation = asString(bind.activation, bind.release == true and "release" or "press")
   creatorCommand = asString(bind.command)
-  creatorCommandKind = "shell"
+  creatorCommandKind = editingCapabilities.native_spawn == true
+    and asString(bind.command_kind, "native") or "shell"
   creatorLibraryEntryId = ""
   creatorDescription = asString(bind.description)
   creatorContextCompositor = asString(snapshot.compositor)
@@ -3085,7 +3096,8 @@ function onCreatorDescriptionChanged(value)
 end
 
 function onCommandLibraryToggle()
-  if formMode == "edit" and editingCapabilities.command ~= true then return end
+  if formMode == "edit" and (editingCapabilities.command ~= true
+    or editingCapabilities.native_spawn == true) then return end
   commandLibraryOpen = not commandLibraryOpen
   creatorError = ""
   render()
@@ -3113,6 +3125,7 @@ function onCommandLibraryReadinessChanged(index, _text)
 end
 
 function onCommandLibraryUseCustom()
+  if formMode == "edit" and editingCapabilities.native_spawn == true then return end
   if creatorCommandKind == "native" then
     creatorCommand = ""
     creatorRevision += 1
