@@ -221,6 +221,37 @@ local function quotedLiteral(text, startAt)
 	return nil, nil
 end
 
+-- Native spawn actions pass an argv vector directly to Niri rather than
+-- invoking a shell. Expose only the conservative, single-line KDL form to the
+-- editor: `spawn` followed by one or more ordinary quoted string arguments.
+-- More elaborate KDL remains visible but read-only so editing can never
+-- silently change its execution semantics.
+local function editableNativeSpawn(action)
+	if type(action) ~= "string" or action:find("[%c]") ~= nil
+		or action:sub(1, 5) ~= "spawn" or not action:sub(6, 6):match("%s") then
+		return false
+	end
+	local cursor = 6
+	local arguments = 0
+	while true do
+		while cursor <= #action and action:sub(cursor, cursor):match("%s") do
+			cursor = cursor + 1
+		end
+		if cursor > #action then return arguments > 0 end
+		-- Niri's documented argv form uses KDL double-quoted strings. Keeping
+		-- this subset strict also lets the writer validate edits without a full
+		-- KDL parser.
+		if action:sub(cursor, cursor) ~= '"' then return false end
+		local _, nextAt = quotedLiteral(action, cursor)
+		if nextAt == nil then return false end
+		arguments = arguments + 1
+		cursor = nextAt
+		if cursor <= #action and not action:sub(cursor, cursor):match("%s") then
+			return false
+		end
+	end
+end
+
 -- Returns executable code and a trailing // comment. Comment markers inside
 -- strings are preserved. KDL block comments remain stateful across lines.
 -- Every host call runs under an interrupt-driven CPU budget, so this stays
@@ -379,6 +410,14 @@ local function contentBeforeOuterClose(text)
 		end
 	end
 	return text
+end
+
+local function rawActionMatches(snippet, action)
+	local openAt = firstOpenBrace(snippet)
+	if openAt == nil then return false end
+	local body = trim(contentBeforeOuterClose(snippet:sub(openAt + 1)))
+	body = trim(body:gsub(";%s*$", ""))
+	return body == trim(action)
 end
 
 local function includeNode(code)
@@ -656,7 +695,8 @@ local function cleanBind(bind)
 	return {
 		id = bind.id, modifiers = bind.modifiers, key = bind.key,
 		description = bind.description, dispatcher = bind.dispatcher,
-		activation = "press", command = bind.command, action = bind.action,
+		activation = "press", command = bind.command, command_kind = bind.command_kind,
+		action = bind.action,
 		has_overlay_title = bind.has_overlay_title,
 		source = bind.source, start_line = bind.start_line, end_line = bind.end_line,
 		raw_snippet = bind.raw_snippet, fingerprint = bind.fingerprint,
@@ -835,15 +875,20 @@ local function parseBind(combo, attributes, action, category, records, activeByC
 	local overlayTitle = titleAttribute(attributes)
 	local hasOverlayTitle = overlayTitle ~= nil and overlayTitle ~= ""
 	local description = hasOverlayTitle and overlayTitle or actionDescription(normalizedAction, verb)
+	local rawSnippet = provenance.raw_snippet or ""
 	local command = ""
+	local commandKind = "shell"
 	if verb == "spawn-sh" then
 		command = quotedLiteral(normalizedAction:sub(#verb + 1), 1) or ""
+	elseif verb == "spawn" and editableNativeSpawn(normalizedAction)
+		and rawActionMatches(rawSnippet, normalizedAction) then
+		command = normalizedAction
+		commandKind = "native"
 	end
-	local rawSnippet = provenance.raw_snippet or ""
 	local bind = {
 		id = stableBindId({ signature, verb, normalizedAction }),
 		modifiers = modifiers, key = key, description = description, dispatcher = verb,
-		activation = "press", command = command, action = normalizedAction,
+		activation = "press", command = command, command_kind = commandKind, action = normalizedAction,
 		has_overlay_title = hasOverlayTitle,
 		source = provenance.source, start_line = provenance.start_line,
 		end_line = provenance.end_line, raw_snippet = rawSnippet,
@@ -851,7 +896,8 @@ local function parseBind(combo, attributes, action, category, records, activeByC
 		managed = provenance.source:match("([^/]+)$") == "keymap.kdl",
 		capabilities = {
 			combo = true, category = true, description = true,
-			command = verb == "spawn-sh", activation = false,
+			command = verb == "spawn-sh" or commandKind == "native",
+			native_spawn = commandKind == "native", activation = false,
 		},
 		_rawKey = rawKey, _category = category or actionCategory(normalizedAction, verb),
 	}

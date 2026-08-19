@@ -23,6 +23,9 @@ All notable changes to Keymap are documented in this file.
 - Fixed `merge_sequential` option, which now correctly merges numbered runs (such
   as Workspace 1–9);
 - Fixed long keybindings being replaced with a single merged keybind.
+- Enabled safe in-place editing of the program and arguments in ordinary Niri
+  `spawn` actions without converting them to shell commands, and added a clear
+  explanation for native actions that remain read-only.
 
 ### Changed
 
@@ -32,11 +35,18 @@ All notable changes to Keymap are documented in this file.
 
 ### Tests
 
+- Added `coroutine_slice_test.lua` and `parser_lifecycle_test.lua` covering
+  bounded parser resumes, multi-tick completion, and stale-generation
+  cancellation.
+- Added `niri_scanner_test.lua` covering the rewritten scanners against a
+  reference corpus and fuzzed inputs.
 - Added `niri_settings_test.lua` covering sequential merging,
-  undescribed-title filtering, similar-action merging, and refresh-watcher
-  echo suppression.
+  undescribed-title filtering, similar-action merging, refresh-watcher echo
+  suppression, and editable native `spawn` detection.
 - Added `merge_similar_test.lua` covering MangoWC and Hyprland similar-action
   merging plus Hyprland watcher echo suppression.
+- Extended writer tests with merged-combination conflict detection and safe
+  native Niri `spawn` updates, validation failures, and rollback.
 
 ## [1.3.4] - 2026-07-29
 

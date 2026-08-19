@@ -719,35 +719,35 @@ local function parseFile(context, path, optional, depth)
 	local lineNumber = 0
 	local hiddenConsumed = {}
 	if source:find("# Keymap hidden ", 1, true) ~= nil then
-	  local hiddenLines = sourceLines(source)
-	  local hiddenCategory = nil
-	  local hiddenKeymode = context.keymode
-	  local hiddenCursor = 1
-	  while hiddenCursor <= #hiddenLines do
-	  	local block, blockEnd, candidate = hiddenBlockAt(hiddenLines, hiddenCursor)
-	  	if candidate then
-	  		for consumed = hiddenCursor, blockEnd do hiddenConsumed[consumed] = true end
-	  		if block == nil then
-	  			context.warnings[#context.warnings + 1] = "hidden_block_invalid:" .. path .. ":" .. tostring(hiddenCursor)
-	  		else
-	  			context.hidden[#context.hidden + 1] = hiddenTarget(
-	  				block, path, hiddenCursor, blockEnd,
-	  				hiddenCategory or context.defaultCategory, hiddenKeymode
-	  			)
-	  		end
-	  		hiddenCursor = blockEnd + 1
-	  	else
-	  		local raw = hiddenLines[hiddenCursor]
-	  		local category = extractCategory(raw)
-	  		if category ~= nil then hiddenCategory = category end
-	  		local effective = trim(raw:sub(1, (findUnquotedComment(raw) or (#raw + 1)) - 1))
-	  		local directive,  value = effective:match("^([%w%-]+)%s*=%s*(.*)$")
-	  		if directive ~= nil and directive:lower() == "keymode" then
-	  			hiddenKeymode = trim(value) ~= "" and trim(value) or "default"
-	  		end
-	  		hiddenCursor = hiddenCursor + 1
-	  	end
-	  end
+		local hiddenLines = sourceLines(source)
+		local hiddenCategory = nil
+		local hiddenKeymode = context.keymode
+		local hiddenCursor = 1
+		while hiddenCursor <= #hiddenLines do
+			local block, blockEnd, candidate = hiddenBlockAt(hiddenLines, hiddenCursor)
+			if candidate then
+				for consumed = hiddenCursor, blockEnd do hiddenConsumed[consumed] = true end
+				if block == nil then
+					context.warnings[#context.warnings + 1] = "hidden_block_invalid:" .. path .. ":" .. tostring(hiddenCursor)
+				else
+					context.hidden[#context.hidden + 1] = hiddenTarget(
+						block, path, hiddenCursor, blockEnd,
+						hiddenCategory or context.defaultCategory, hiddenKeymode
+					)
+				end
+				hiddenCursor = blockEnd + 1
+			else
+				local raw = hiddenLines[hiddenCursor]
+				local category = extractCategory(raw)
+				if category ~= nil then hiddenCategory = category end
+				local effective = trim(raw:sub(1, (findUnquotedComment(raw) or (#raw + 1)) - 1))
+				local directive, value = effective:match("^([%w%-]+)%s*=%s*(.*)$")
+				if directive ~= nil and directive:lower() == "keymode" then
+					hiddenKeymode = trim(value) ~= "" and trim(value) or "default"
+				end
+				hiddenCursor = hiddenCursor + 1
+			end
+		end
 	end
 	for rawLine in (source .. "\n"):gmatch("([^\n]*)\n") do
 		lineNumber = lineNumber + 1
